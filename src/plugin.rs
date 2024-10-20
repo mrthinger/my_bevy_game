@@ -1,5 +1,5 @@
 use avian2d::{math::*, prelude::*};
-use bevy::{ecs::query::Has, math::VectorSpace, prelude::*};
+use bevy::prelude::*;
 
 pub struct CharacterControllerPlugin;
 
@@ -28,10 +28,13 @@ pub enum MovementAction {
 
 /// A marker component indicating that an entity is using a character controller.
 #[derive(Component)]
-pub struct CharacterController;
+pub struct CharacterController {
+    wall_jumps: u32,
+    last_wall: Option<Grounded>,
+}
 
 /// A marker component indicating that an entity is on the ground.
-#[derive(Component, PartialEq)]
+#[derive(Component, PartialEq, Clone)]
 pub enum Grounded {
     None,
     Ground,
@@ -110,7 +113,10 @@ impl CharacterControllerBundle {
         caster_shape.set_scale(Vector::ONE * 0.99, 10);
 
         Self {
-            character_controller: CharacterController,
+            character_controller: CharacterController {
+                wall_jumps: 0,
+                last_wall: None,
+            },
             rigid_body: RigidBody::Dynamic,
             collider,
             caster_shape: ShapeCastShape(caster_shape),
@@ -193,12 +199,12 @@ fn update_grounded(
     for (entity, caster_shape, position, mut grounded) in &mut query {
         let filter = SpatialQueryFilter::default().with_excluded_entities([entity]);
 
-        if let Some(_is_grounded) = spatial_query.cast_shape(
+        if let Some(_hit) = spatial_query.cast_shape(
             &caster_shape.0, // Shape
             position.0,      // Origin
             0.0,             // Shape rotation
             Dir2::NEG_Y,     // Direction
-            10.0,            // Maximum time of impact (travel distance)
+            20.0,            // Maximum time of impact (travel distance)
             true,            // Should initial penetration at the origin be ignored
             filter.clone(),  // Query filter
         ) {
@@ -207,12 +213,12 @@ fn update_grounded(
             continue;
         }
 
-        if let Some(hit) = spatial_query.cast_shape(
+        if let Some(_hit) = spatial_query.cast_shape(
             &caster_shape.0, // Shape
             position.0,      // Origin
             0.0,             // Shape rotation
             Dir2::X,         // Direction
-            10.0,            // Maximum time of impact (travel distance)
+            20.0,            // Maximum time of impact (travel distance)
             true,            // Should initial penetration at the origin be ignored
             filter.clone(),  // Query filter
         ) {
@@ -221,12 +227,12 @@ fn update_grounded(
             continue;
         }
 
-        if let Some(_is_grounded) = spatial_query.cast_shape(
+        if let Some(_hit) = spatial_query.cast_shape(
             &caster_shape.0, // Shape
             position.0,      // Origin
             0.0,             // Shape rotation
             Dir2::NEG_X,     // Direction
-            10.0,            // Maximum time of impact (travel distance)
+            20.0,            // Maximum time of impact (travel distance)
             true,            // Should initial penetration at the origin be ignored
             filter,          // Query filter
         ) {
@@ -249,24 +255,41 @@ fn movement(
         &JumpImpulse,
         &mut LinearVelocity,
         &Grounded,
+        &mut CharacterController,
     )>,
 ) {
-    // Precision is adjusted so that the example works with
-    // both the `f32` and `f64` features. Otherwise you don't need this.
     let delta_time = time.delta_seconds_f64().adjust_precision();
 
     for event in movement_event_reader.read() {
-        for (movement_acceleration, jump_impulse, mut linear_velocity, grounded) in &mut controllers
+        for (movement_acceleration, jump_impulse, mut linear_velocity, grounded, mut controller) in
+            &mut controllers
         {
             match event {
                 MovementAction::Move(direction) => {
                     linear_velocity.x += *direction * movement_acceleration.0 * delta_time;
                 }
-                MovementAction::Jump => {
-                    if *grounded == Grounded::Ground {
+                MovementAction::Jump => match *grounded {
+                    Grounded::Ground => {
                         linear_velocity.y = jump_impulse.0;
+                        controller.wall_jumps = 0;
+                        controller.last_wall = None;
                     }
-                }
+                    Grounded::LeftWall | Grounded::RightWall => {
+                        if controller.wall_jumps == 0
+                            || controller.last_wall != Some(grounded.clone())
+                        {
+                            linear_velocity.y = jump_impulse.0;
+                            linear_velocity.x = if *grounded == Grounded::LeftWall {
+                                jump_impulse.0 * 0.5
+                            } else {
+                                -jump_impulse.0 * 0.5
+                            };
+                            controller.wall_jumps += 1;
+                            controller.last_wall = Some(grounded.clone());
+                        }
+                    }
+                    Grounded::None => {}
+                },
             }
         }
     }

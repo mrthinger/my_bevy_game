@@ -210,4 +210,33 @@ fn setup(
 
     // Camera
     commands.spawn(Camera2dBundle::default());
+
+    // Add two walls to jump between
+    commands.spawn((
+        SpriteBundle {
+            sprite: Sprite {
+                color: Color::srgb(0.7, 0.7, 0.8),
+                custom_size: Some(Vec2::new(50.0, 300.0)),
+                ..default()
+            },
+            transform: Transform::from_xyz(-50.0, 0.0, 0.0),
+            ..default()
+        },
+        RigidBody::Static,
+        Collider::rectangle(50.0, 300.0),
+    ));
+
+    commands.spawn((
+        SpriteBundle {
+            sprite: Sprite {
+                color: Color::srgb(0.7, 0.7, 0.8),
+                custom_size: Some(Vec2::new(50.0, 300.0)),
+                ..default()
+            },
+            transform: Transform::from_xyz(50.0, 0.0, 0.0),
+            ..default()
+        },
+        RigidBody::Static,
+        Collider::rectangle(50.0, 300.0),
+    ));
 }
