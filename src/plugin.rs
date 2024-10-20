@@ -1,5 +1,5 @@
 use avian2d::{math::*, prelude::*};
-use bevy::{ecs::query::Has, prelude::*};
+use bevy::{ecs::query::Has, math::VectorSpace, prelude::*};
 
 pub struct CharacterControllerPlugin;
 
@@ -31,9 +31,13 @@ pub enum MovementAction {
 pub struct CharacterController;
 
 /// A marker component indicating that an entity is on the ground.
-#[derive(Component)]
-#[component(storage = "SparseSet")]
-pub struct Grounded;
+#[derive(Component, PartialEq)]
+pub enum Grounded {
+    None,
+    Ground,
+    LeftWall,
+    RightWall,
+}
 /// The acceleration used for character movement.
 #[derive(Component)]
 pub struct MovementAcceleration(Scalar);
@@ -52,6 +56,9 @@ pub struct JumpImpulse(Scalar);
 #[derive(Component)]
 pub struct MaxSlopeAngle(Scalar);
 
+#[derive(Component)]
+pub struct ShapeCastShape(Collider);
+
 /// A bundle that contains the components needed for a basic
 /// kinematic character controller.
 #[derive(Bundle)]
@@ -59,7 +66,7 @@ pub struct CharacterControllerBundle {
     character_controller: CharacterController,
     rigid_body: RigidBody,
     collider: Collider,
-    ground_caster: ShapeCaster,
+    caster_shape: ShapeCastShape,
     locked_axes: LockedAxes,
     movement: MovementBundle,
 }
@@ -67,6 +74,7 @@ pub struct CharacterControllerBundle {
 /// A bundle that contains components for character movement.
 #[derive(Bundle)]
 pub struct MovementBundle {
+    grounded: Grounded,
     acceleration: MovementAcceleration,
     damping: MovementDampingFactor,
     jump_impulse: JumpImpulse,
@@ -81,6 +89,7 @@ impl MovementBundle {
         max_slope_angle: Scalar,
     ) -> Self {
         Self {
+            grounded: Grounded::None,
             acceleration: MovementAcceleration(acceleration),
             damping: MovementDampingFactor(damping),
             jump_impulse: JumpImpulse(jump_impulse),
@@ -97,7 +106,6 @@ impl Default for MovementBundle {
 
 impl CharacterControllerBundle {
     pub fn new(collider: Collider) -> Self {
-        // Create shape caster as a slightly smaller version of collider
         let mut caster_shape = collider.clone();
         caster_shape.set_scale(Vector::ONE * 0.99, 10);
 
@@ -105,8 +113,7 @@ impl CharacterControllerBundle {
             character_controller: CharacterController,
             rigid_body: RigidBody::Dynamic,
             collider,
-            ground_caster: ShapeCaster::new(caster_shape, Vector::ZERO, 0.0, Dir2::NEG_Y)
-                .with_max_time_of_impact(10.0),
+            caster_shape: ShapeCastShape(caster_shape),
             locked_axes: LockedAxes::ROTATION_LOCKED,
             movement: MovementBundle::default(),
         }
@@ -176,26 +183,60 @@ fn gamepad_input(
 fn update_grounded(
     mut commands: Commands,
     mut query: Query<
-        (Entity, &ShapeHits, &Rotation, Option<&MaxSlopeAngle>),
+        (Entity, &ShapeCastShape, &Position, &mut Grounded),
         With<CharacterController>,
     >,
+    spatial_query: SpatialQuery,
 ) {
-    for (entity, hits, rotation, max_slope_angle) in &mut query {
-        // The character is grounded if the shape caster has a hit with a normal
-        // that isn't too steep.
-        let is_grounded = hits.iter().any(|hit| {
-            if let Some(angle) = max_slope_angle {
-                (rotation * -hit.normal2).angle_between(Vector::Y).abs() <= angle.0
-            } else {
-                true
-            }
-        });
+    // Create shape caster as a slightly smaller version of collider
 
-        if is_grounded {
-            commands.entity(entity).insert(Grounded);
-        } else {
-            commands.entity(entity).remove::<Grounded>();
+    for (entity, caster_shape, position, mut grounded) in &mut query {
+        let filter = SpatialQueryFilter::default().with_excluded_entities([entity]);
+
+        if let Some(_is_grounded) = spatial_query.cast_shape(
+            &caster_shape.0, // Shape
+            position.0,      // Origin
+            0.0,             // Shape rotation
+            Dir2::NEG_Y,     // Direction
+            10.0,            // Maximum time of impact (travel distance)
+            true,            // Should initial penetration at the origin be ignored
+            filter.clone(),  // Query filter
+        ) {
+            println!("Ground detected!");
+            *grounded = Grounded::Ground;
+            continue;
         }
+
+        if let Some(hit) = spatial_query.cast_shape(
+            &caster_shape.0, // Shape
+            position.0,      // Origin
+            0.0,             // Shape rotation
+            Dir2::X,         // Direction
+            10.0,            // Maximum time of impact (travel distance)
+            true,            // Should initial penetration at the origin be ignored
+            filter.clone(),  // Query filter
+        ) {
+            println!("right wall detected!");
+            *grounded = Grounded::RightWall;
+            continue;
+        }
+
+        if let Some(_is_grounded) = spatial_query.cast_shape(
+            &caster_shape.0, // Shape
+            position.0,      // Origin
+            0.0,             // Shape rotation
+            Dir2::NEG_X,     // Direction
+            10.0,            // Maximum time of impact (travel distance)
+            true,            // Should initial penetration at the origin be ignored
+            filter,          // Query filter
+        ) {
+            println!("left wall detected!");
+            *grounded = Grounded::LeftWall;
+            continue;
+        }
+
+        println!("none detected!");
+        *grounded = Grounded::None;
     }
 }
 
@@ -207,7 +248,7 @@ fn movement(
         &MovementAcceleration,
         &JumpImpulse,
         &mut LinearVelocity,
-        Has<Grounded>,
+        &Grounded,
     )>,
 ) {
     // Precision is adjusted so that the example works with
@@ -215,15 +256,14 @@ fn movement(
     let delta_time = time.delta_seconds_f64().adjust_precision();
 
     for event in movement_event_reader.read() {
-        for (movement_acceleration, jump_impulse, mut linear_velocity, is_grounded) in
-            &mut controllers
+        for (movement_acceleration, jump_impulse, mut linear_velocity, grounded) in &mut controllers
         {
             match event {
                 MovementAction::Move(direction) => {
                     linear_velocity.x += *direction * movement_acceleration.0 * delta_time;
                 }
                 MovementAction::Jump => {
-                    if is_grounded {
+                    if *grounded == Grounded::Ground {
                         linear_velocity.y = jump_impulse.0;
                     }
                 }

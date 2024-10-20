@@ -20,7 +20,7 @@ fn main() {
             CharacterControllerPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.1)))
-        .insert_resource(Gravity(Vector::NEG_Y * 1000.0))
+        .insert_resource(Gravity(Vector::NEG_Y * 800.0))
         .add_systems(Startup, setup)
         .add_systems(Update, animate_sprite)
         .run();
